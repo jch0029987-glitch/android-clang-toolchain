@@ -1,4 +1,4 @@
-name: Build Rust Android ARM64 Toolchain
+name: Build Native Android Rust Toolchain
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         default: 'stable'
         type: string
       ndk_version:
-        description: 'Target Android NDK Version (for consistency)'
+        description: 'Target Android NDK Version'
         required: true
         default: 'r29'
         type: choice
@@ -22,44 +22,63 @@ permissions:
   contents: write
 
 jobs:
-  build-rust-arm64:
-    runs-on: ubuntu-24.04-arm
+  build-android-rust:
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Rustup & ARM64 Host Toolchain
+      - name: Setup Rustup & Target
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ inputs.rust_version }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           rustup target add aarch64-linux-android
 
-      - name: Package ARM64 Rust Executables and Sysroot
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v3
+        with:
+          ndk-version: ${{ inputs.ndk_version }}
+          add-to-path: true
+
+      - name: Cross-Compile Cargo & Rustc for Android (aarch64-linux-android)
+        run: |
+          # Configure Cargo to use the Android NDK Clang compiler wrapper for aarch64-linux-android
+          NDK_TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          API_LEVEL=26
+          
+          export CC_aarch64_linux_android="$NDK_TOOLCHAIN/bin/aarch64-linux-android$API_LEVEL-clang"
+          export AR_aarch64_linux_android="$NDK_TOOLCHAIN/bin/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+
+          echo "Building standalone Cargo and Rustc for Android..."
+          # Clone or fetch rust source/tools to build, or cross-compile your cargo/rust components
+          # Alternatively, build a self-contained cargo wrapper or download prebuilt Android binaries of cargo/rustc
+          cargo build --target aarch64-linux-android --release -p cargo -p rustc
+
+      - name: Package Android Binaries and Sysroot
         run: |
           PKG_DIR=$HOME/rust_pkg
           mkdir -p $PKG_DIR/jniLibs/arm64-v8a
           mkdir -p $PKG_DIR/lib/rustlib
 
-          # 1. Copy and rename native ARM64 Rust binaries to .so for nativeLibraryDir execution
-          cp $(which cargo) $PKG_DIR/jniLibs/arm64-v8a/libcargo_exec.so
-          cp $(which rustc) $PKG_DIR/jniLibs/arm64-v8a/librustc_exec.so
+          # Copy the actual NDK-compiled Android binaries
+          cp target/aarch64-linux-android/release/cargo $PKG_DIR/jniLibs/arm64-v8a/libcargo_exec.so
+          cp target/aarch64-linux-android/release/rustc $PKG_DIR/jniLibs/arm64-v8a/librustc_exec.so
 
-          # 2. Copy the ARM64 Rust standard library target components for Android
-          RUSTC_SYSROOT=$(rustc --print sysroot)
-          cp -r $RUSTC_SYSROOT/lib/* $PKG_DIR/lib/
+          # Set executable permissions in the archive
+          chmod +x $PKG_DIR/jniLibs/arm64-v8a/*.so
 
-          # 3. Compress into a release archive
+          # Compress into release bundle
           cd $PKG_DIR
-          tar -cJf $HOME/rust-${{ inputs.rust_version }}-${{ inputs.ndk_version }}-arm64-bundle.tar.xz jniLibs lib
+          tar -cJf $HOME/rust-android-${{ inputs.rust_version }}-${{ inputs.ndk_version }}-arm64.tar.xz jniLibs lib
 
       - name: Create GitHub Release and Upload Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="rust-${{ inputs.rust_version }}-${{ inputs.ndk_version }}-${{ github.run_number }}"
-          ARCHIVE_PATH="$HOME/rust-${{ inputs.rust_version }}-${{ inputs.ndk_version }}-arm64-bundle.tar.xz"
+          TAG_NAME="rust-android-${{ inputs.rust_version }}-${{ inputs.ndk_version }}-${{ github.run_number }}"
+          ARCHIVE_PATH="$HOME/rust-android-${{ inputs.rust_version }}-${{ inputs.ndk_version }}-arm64.tar.xz"
           
-          echo "Creating release $TAG_NAME..."
           gh release create "$TAG_NAME" "$ARCHIVE_PATH" \
-            --title "Rust (${{ inputs.rust_version }}) + NDK (${{ inputs.ndk_version }})" \
-            --notes "ARM64 Rust toolchain bundle matched with NDK ${{ inputs.ndk_version }} target expectations."
+            --title "Native Android Rust Toolchain (${{ inputs.rust_version }})" \
+            --notes "Cargo and Rustc cross-compiled specifically for aarch64-linux-android using NDK ${{ inputs.ndk_version }}."
