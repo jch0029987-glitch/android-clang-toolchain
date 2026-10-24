@@ -2,10 +2,33 @@ name: Build Custom Native ARM64 Clang Toolchain
 
 on:
   workflow_dispatch:
+    inputs:
+      llvm_version:
+        description: 'LLVM/Clang Tag or Branch (e.g. llvmorg-18.1.8, llvmorg-17.0.6)'
+        required: true
+        default: 'llvmorg-18.1.8'
+        type: choice
+        options:
+          - 'llvmorg-18.1.8'
+          - 'llvmorg-17.0.6'
+          - 'main'
+      ndk_version:
+        description: 'Android NDK Release for Sysroot Headers'
+        required: true
+        default: 'r29'
+        type: choice
+        options:
+          - 'r29'
+          - 'r28'
+          - 'r26b'
+
+# Required to allow GITHUB_TOKEN to create releases and upload files
+permissions:
+  contents: write
 
 jobs:
   build-native-arm64:
-    runs-on: ubuntu-24.04-arm # GitHub's native ARM64 cloud runner
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -15,12 +38,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build build-essential python3 git libxml2-dev zlib1g-dev
 
-      - name: Clone LLVM Project (Minimal Subprojects for Clang/LLD)
+      - name: Clone LLVM Source (${{ inputs.llvm_version }})
         run: |
-          echo "Cloning LLVM source tree..."
-          git clone --depth 1 --branch llvmorg-18.1.8 https://github.com/llvm/llvm-project.git
+          echo "Cloning LLVM tag: ${{ inputs.llvm_version }}"
+          git clone --depth 1 --branch ${{ inputs.llvm_version }} https://github.com/llvm/llvm-project.git
           cd llvm-project
-          mkdir build && cd build
+          mkdir build
 
       - name: Configure CMake for ARM64 Host Clang
         run: |
@@ -33,39 +56,42 @@ jobs:
             -DLLVM_INCLUDE_BENCHMARKS=OFF \
             -DCLANG_DEFAULT_CXX_STDLIB=libc++
 
-      - name: Build Clang and LLD (Native ARM64)
+      - name: Build Clang and LLD
         run: |
           cd llvm-project/build
           ninja clang lld
 
-      - name: Package Binaries and NDK Sysroot
+      - name: Package Binaries and NDK Sysroot (${{ inputs.ndk_version }})
         run: |
           BUILD_DIR=$HOME/toolchain_pkg
           mkdir -p $BUILD_DIR/jniLibs/arm64-v8a
           mkdir -p $BUILD_DIR/sysroot
 
-          # 1. Grab your freshly compiled native ARM64 binaries and rename them to .so
+          # 1. Copy compiled ARM64 executables and rename to .so for nativeLibraryDir execution
           LLVM_BUILD_BIN=$GITHUB_WORKSPACE/llvm-project/build/bin
           cp $LLVM_BUILD_BIN/clang $BUILD_DIR/jniLibs/arm64-v8a/libclang_exec.so
           cp $LLVM_BUILD_BIN/clang++ $BUILD_DIR/jniLibs/arm64-v8a/libclangxx_exec.so
           cp $LLVM_BUILD_BIN/lld $BUILD_DIR/jniLibs/arm64-v8a/liblld_exec.so
 
-          # 2. Download official Google NDK just to extract the universal sysroot headers (<stdio.h>, etc.)
-          wget -q https://dl.google.com/android/repository/android-ndk-r26b-linux.zip
-          unzip -q android-ndk-r26b-linux.zip
-          cp -r android-ndk-r26b/toolchains/llvm/prebuilt/linux-x86_64/sysroot/* $BUILD_DIR/sysroot/
+          # 2. Download requested NDK version for sysroot headers
+          NDK_VER="${{ inputs.ndk_version }}"
+          echo "Downloading NDK ${NDK_VER} for headers..."
+          wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VER}-linux.zip
+          unzip -q android-ndk-${NDK_VER}-linux.zip
+          cp -r android-ndk-${NDK_VER}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/* $BUILD_DIR/sysroot/
 
-          # 3. Compress into your final release bundle
+          # 3. Create compressed release tarball
           cd $BUILD_DIR
-          tar -cJf $HOME/custom-arm64-clang-bundle.tar.xz jniLibs sysroot
+          tar -cJf $HOME/clang-${{ inputs.llvm_version }}-arm64-bundle.tar.xz jniLibs sysroot
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: custom-v1.${{ github.run_number }}
-          name: "Custom Native ARM64 Clang Toolchain v1.${{ github.run_number }}"
-          body: "Built completely from source on a native ARM64 GitHub Actions runner. 100% custom, zero community prebuilts."
-          files: |
-            /home/runner/custom-arm64-clang-bundle.tar.xz
+      - name: Create GitHub Release and Upload Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ inputs.llvm_version }}-${{ inputs.ndk_version }}-${{ github.run_number }}"
+          ARCHIVE_PATH="$HOME/clang-${{ inputs.llvm_version }}-arm64-bundle.tar.xz"
+          
+          echo "Creating release $TAG_NAME..."
+          gh release create "$TAG_NAME" "$ARCHIVE_PATH" \
+            --title "Clang (${{ inputs.llvm_version }}) + NDK (${{ inputs.ndk_version }})" \
+            --notes "Custom ARM64 host toolchain built natively via GitHub Actions."
