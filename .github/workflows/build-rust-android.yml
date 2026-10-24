@@ -8,6 +8,15 @@ on:
         required: true
         default: 'stable'
         type: string
+      ndk_version:
+        description: 'Target Android NDK Version (for consistency)'
+        required: true
+        default: 'r29'
+        type: choice
+        options:
+          - 'r29'
+          - 'r28'
+          - 'r26b'
 
 permissions:
   contents: write
@@ -23,11 +32,7 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ inputs.rust_version }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: Verify Host Architecture
-        run: |
-          rustc -Vv
-          uname -m
+          rustup target add aarch64-linux-android
 
       - name: Package ARM64 Rust Executables and Sysroot
         run: |
@@ -39,22 +44,22 @@ jobs:
           cp $(which cargo) $PKG_DIR/jniLibs/arm64-v8a/libcargo_exec.so
           cp $(which rustc) $PKG_DIR/jniLibs/arm64-v8a/librustc_exec.so
 
-          # 2. Copy the ARM64 Rust standard library sysroot components
+          # 2. Copy the ARM64 Rust standard library target components for Android
           RUSTC_SYSROOT=$(rustc --print sysroot)
           cp -r $RUSTC_SYSROOT/lib/* $PKG_DIR/lib/
 
           # 3. Compress into a release archive
           cd $PKG_DIR
-          tar -cJf $HOME/rust-toolchain-arm64-bundle.tar.xz jniLibs lib
+          tar -cJf $HOME/rust-${{ inputs.rust_version }}-${{ inputs.ndk_version }}-arm64-bundle.tar.xz jniLibs lib
 
       - name: Create GitHub Release and Upload Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="rust-arm64-${{ inputs.rust_version }}-${{ github.run_number }}"
-          ARCHIVE_PATH="$HOME/rust-toolchain-arm64-bundle.tar.xz"
+          TAG_NAME="rust-${{ inputs.rust_version }}-${{ inputs.ndk_version }}-${{ github.run_number }}"
+          ARCHIVE_PATH="$HOME/rust-${{ inputs.rust_version }}-${{ inputs.ndk_version }}-arm64-bundle.tar.xz"
           
           echo "Creating release $TAG_NAME..."
           gh release create "$TAG_NAME" "$ARCHIVE_PATH" \
-            --title "Rust ARM64 Toolchain (${{ inputs.rust_version }})" \
-            --notes "Pure ARM64 Rust toolchain bundle with .so executables and standard library sysroot compiled natively on ARM hardware."
+            --title "Rust (${{ inputs.rust_version }}) + NDK (${{ inputs.ndk_version }})" \
+            --notes "ARM64 Rust toolchain bundle matched with NDK ${{ inputs.ndk_version }} target expectations."
