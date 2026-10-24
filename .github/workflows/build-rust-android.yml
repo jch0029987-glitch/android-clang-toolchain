@@ -35,7 +35,7 @@ jobs:
           rustup target add aarch64-linux-android
 
       - name: Install Android NDK
-        uses: nttld/setup-ndk@v3
+        uses: nttld/setup-ndk@v1
         with:
           ndk-version: ${{ inputs.ndk_version }}
           add-to-path: true
@@ -51,8 +51,6 @@ jobs:
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
 
           echo "Building standalone Cargo and Rustc for Android..."
-          # Clone or fetch rust source/tools to build, or cross-compile your cargo/rust components
-          # Alternatively, build a self-contained cargo wrapper or download prebuilt Android binaries of cargo/rustc
           cargo build --target aarch64-linux-android --release -p cargo -p rustc
 
       - name: Package Android Binaries and Sysroot
