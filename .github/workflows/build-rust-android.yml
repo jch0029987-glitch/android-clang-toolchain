@@ -1,4 +1,4 @@
-name: Build Rust Android Toolchain
+name: Build Rust Android ARM64 Toolchain
 
 on:
   workflow_dispatch:
@@ -13,43 +13,48 @@ permissions:
   contents: write
 
 jobs:
-  build-rust:
-    runs-on: ubuntu-latest
+  build-rust-arm64:
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Rustup & Toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: ${{ inputs.rust_version }}
+      - name: Install Rustup & ARM64 Host Toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ inputs.rust_version }}
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
-      - name: Package Rust Executables and Sysroot
+      - name: Verify Host Architecture
+        run: |
+          rustc -Vv
+          uname -m
+
+      - name: Package ARM64 Rust Executables and Sysroot
         run: |
           PKG_DIR=$HOME/rust_pkg
           mkdir -p $PKG_DIR/jniLibs/arm64-v8a
           mkdir -p $PKG_DIR/lib/rustlib
 
-          # 1. Copy and rename Rust binaries to .so for nativeLibraryDir execution
+          # 1. Copy and rename native ARM64 Rust binaries to .so for nativeLibraryDir execution
           cp $(which cargo) $PKG_DIR/jniLibs/arm64-v8a/libcargo_exec.so
           cp $(which rustc) $PKG_DIR/jniLibs/arm64-v8a/librustc_exec.so
 
-          # 2. Copy the Rust standard library sysroot components
+          # 2. Copy the ARM64 Rust standard library sysroot components
           RUSTC_SYSROOT=$(rustc --print sysroot)
           cp -r $RUSTC_SYSROOT/lib/* $PKG_DIR/lib/
 
           # 3. Compress into a release archive
           cd $PKG_DIR
-          tar -cJf $HOME/rust-toolchain-bundle.tar.xz jniLibs lib
+          tar -cJf $HOME/rust-toolchain-arm64-bundle.tar.xz jniLibs lib
 
       - name: Create GitHub Release and Upload Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="rust-toolchain-${{ inputs.rust_version }}-${{ github.run_number }}"
-          ARCHIVE_PATH="$HOME/rust-toolchain-bundle.tar.xz"
+          TAG_NAME="rust-arm64-${{ inputs.rust_version }}-${{ github.run_number }}"
+          ARCHIVE_PATH="$HOME/rust-toolchain-arm64-bundle.tar.xz"
           
           echo "Creating release $TAG_NAME..."
           gh release create "$TAG_NAME" "$ARCHIVE_PATH" \
-            --title "Rust Toolchain (${{ inputs.rust_version }})" \
-            --notes "Pure Rust toolchain bundle with .so executables and standard library sysroot."
+            --title "Rust ARM64 Toolchain (${{ inputs.rust_version }})" \
+            --notes "Pure ARM64 Rust toolchain bundle with .so executables and standard library sysroot compiled natively on ARM hardware."
