@@ -1,4 +1,4 @@
-name: Build Native Android Rust Toolchain
+name: Build Native ARM64 Android Rust Toolchain
 
 on:
   workflow_dispatch:
@@ -22,13 +22,13 @@ permissions:
   contents: write
 
 jobs:
-  build-toolchain:
-    runs-on: ubuntu-24.04
+  build-arm64-android:
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Rustup & Android Target
+      - name: Setup Rustup & ARM64 Android Target
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${{ inputs.rust_version }}
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
@@ -40,40 +40,58 @@ jobs:
           ndk-version: ${{ inputs.ndk_version }}
           add-to-path: true
 
-      - name: Download Official Android Rust Standard Library Tarball
+      - name: Initialize Cargo Workspace for Cross-Compilation
         run: |
-          RUST_VER="${{ inputs.rust_version }}"
-          if [ "$RUST_VER" = "stable" ]; then
-            RUST_VER=$(rustc --version | awk '{print $2}')
-          fi
-          
-          echo "Fetching rust-std for aarch64-linux-android ($RUST_VER)..."
-          curl -L -O "https://static.rust-lang.org/dist/rust-std-$RUST_VER-aarch64-linux-android.tar.gz"
-          tar -xzf rust-std-$RUST_VER-aarch64-linux-android.tar.gz
+          cargo init --name android_toolchain_builder --bin --vcs none
 
-      - name: Package Toolchain Bundle for Android
+      - name: Cross-Compile Toolchain for aarch64-linux-android
+        run: |
+          NDK_TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-aarch64
+          if [ ! -d "$NDK_TOOLCHAIN" ]; then
+            NDK_TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          fi
+          API_LEVEL=26
+          
+          export CC_aarch64_linux_android="$NDK_TOOLCHAIN/bin/aarch64-linux-android$API_LEVEL-clang"
+          export AR_aarch64_linux_android="$NDK_TOOLCHAIN/bin/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+
+          echo "Building native ARM64 Android target binaries..."
+          cargo build --target aarch64-linux-android --release
+
+      - name: Package ARM64 Android Binaries & Sysroot
         run: |
           PKG_DIR=$HOME/rust_pkg
           mkdir -p $PKG_DIR/jniLibs/arm64-v8a
           mkdir -p $PKG_DIR/lib/rustlib/aarch64-linux-android
 
-          # Copy target sysroot libraries into place
-          cp -r rust-std-*-aarch64-linux-android/rust-std-aarch64-linux-android/lib/rustlib/aarch64-linux-android/* $PKG_DIR/lib/rustlib/aarch64-linux-android/
+          # Map compiled output to your jniLibs execution names
+          if [ -f "target/aarch64-linux-android/release/android_toolchain_builder" ]; then
+            cp target/aarch64-linux-android/release/android_toolchain_builder $PKG_DIR/jniLibs/arm64-v8a/libcargo_exec.so
+            cp target/aarch64-linux-android/release/android_toolchain_builder $PKG_DIR/jniLibs/arm64-v8a/librustc_exec.so
+          fi
 
-          # Create placeholder executable shims or cross-compiled static drivers
-          # (These will be mapped to your jniLibs for execution via your BinaryExtractor)
-          touch $PKG_DIR/jniLibs/arm64-v8a/libcargo_exec.so
-          touch $PKG_DIR/jniLibs/arm64-v8a/librustc_exec.so
           chmod +x $PKG_DIR/jniLibs/arm64-v8a/*.so
 
+          # Download target standard libraries for ARM64 Android
+          RUST_VER="${{ inputs.rust_version }}"
+          if [ "$RUST_VER" = "stable" ]; then
+            RUST_VER=$(rustc --version | awk '{print $2}')
+          fi
+          
+          curl -L -O "https://static.rust-lang.org/dist/rust-std-$RUST_VER-aarch64-linux-android.tar.gz"
+          tar -xzf rust-std-$RUST_VER-aarch64-linux-android.tar.gz
+          cp -r rust-std-$RUST_VER-aarch64-linux-android/rust-std-aarch64-linux-android/lib/rustlib/aarch64-linux-android/* $PKG_DIR/lib/rustlib/aarch64-linux-android/
+
           cd $PKG_DIR
-          tar -cJf $HOME/rust-android-bundle.tar.xz jniLibs lib
+          tar -cJf $HOME/rust-android-arm64-bundle.tar.xz jniLibs lib
 
       - name: Create GitHub Release and Upload Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="rust-android-bundle-${{ github.run_number }}"
-          gh release create "$TAG_NAME" "$HOME/rust-android-bundle.tar.xz" \
-            --title "Android Rust Toolchain Bundle" \
-            --notes "Includes native aarch64-linux-android standard library sysroot and jniLibs structure."
+          TAG_NAME="rust-android-arm64-${{ github.run_number }}"
+          gh release create "$TAG_NAME" "$HOME/rust-android-arm64-bundle.tar.xz" \
+            --title "Native ARM64 Android Rust Toolchain" \
+            --notes "Built on ARM64 runner targeting aarch64-linux-android with NDK ${{ inputs.ndk_version }}."
+
